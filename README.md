@@ -1,4 +1,4 @@
-# IMPOSSIBLE BACKROOMS
+# Dream Maze
 
 A psychological 3D raycasting maze game built with Ebiten in Go.
 
