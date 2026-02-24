@@ -6,9 +6,12 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/audio"
+	"github.com/hajimehoshi/ebiten/v2/audio/mp3"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 )
@@ -27,6 +30,10 @@ var levelMessages = map[int]string{
 	4: "...",
 }
 
+// Audio
+var audioContext *audio.Context
+var musicPlayer *audio.Player
+
 ///////////////////////////////////////////////////////////////
 // PLAYER
 ///////////////////////////////////////////////////////////////
@@ -42,9 +49,11 @@ type Player struct {
 ///////////////////////////////////////////////////////////////
 
 type Game struct {
-	player   Player
-	level    int
-	finished bool
+	player      Player
+	level       int
+	finished    bool
+	bananaImage *ebiten.Image
+	doorImage   *ebiten.Image
 }
 
 ///////////////////////////////////////////////////////////////
@@ -52,7 +61,6 @@ type Game struct {
 ///////////////////////////////////////////////////////////////
 
 func generateMaze(level int) {
-
 	gameMap = make([][]int, currentSize)
 	for i := range gameMap {
 		gameMap[i] = make([]int, currentSize)
@@ -71,7 +79,6 @@ func generateMaze(level int) {
 
 	dirs := []cell{{0, -2}, {2, 0}, {0, 2}, {-2, 0}}
 
-	// Perfect DFS maze
 	for len(stack) > 0 {
 		current := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -92,7 +99,6 @@ func generateMaze(level int) {
 	// Chaos Phase
 	var chaosRatio float64
 	var minOpenNeighbors int
-
 	switch level {
 	case 1:
 		chaosRatio = 0.2
@@ -135,7 +141,6 @@ func generateMaze(level int) {
 func placeExit(px, py int) {
 	var maxDist float64
 	var ex, ey int
-
 	for y := 1; y < currentSize-1; y++ {
 		for x := 1; x < currentSize-1; x++ {
 			if gameMap[y][x] == 0 {
@@ -148,7 +153,6 @@ func placeExit(px, py int) {
 			}
 		}
 	}
-
 	gameMap[ey][ex] = 2
 }
 
@@ -164,6 +168,9 @@ func (g *Game) Update() error {
 			g.finished = false
 			currentSize = 31
 			g.generateLevel()
+			g.player.x = 1.5
+			g.player.y = 1.5
+			g.player.angle = 0
 		}
 		return nil
 	}
@@ -225,42 +232,15 @@ func (g *Game) generateLevel() {
 ///////////////////////////////////////////////////////////////
 
 func (g *Game) Draw(screen *ebiten.Image) {
-
 	width, height := screen.Size()
 
 	if g.finished {
 		screen.Fill(color.RGBA{10, 10, 15, 255})
-		// Ground
-		ebitenutil.DrawRect(screen, 0, 170, 320, 30, color.RGBA{40, 40, 40, 255})
-		// Rails
-		ebitenutil.DrawLine(screen, 0, 180, 320, 180, color.RGBA{120, 120, 120, 255})
-		ebitenutil.DrawLine(screen, 0, 190, 320, 190, color.RGBA{120, 120, 120, 255})
-		// Smoke
-		ebitenutil.DrawRect(screen, 150, 80, 10, 10, color.RGBA{200, 200, 200, 200})
-		ebitenutil.DrawRect(screen, 155, 70, 12, 12, color.RGBA{180, 180, 180, 180})
-		ebitenutil.DrawRect(screen, 160, 55, 14, 14, color.RGBA{160, 160, 160, 160})
-		// Engine
-		ebitenutil.DrawRect(screen, 120, 120, 70, 35, color.RGBA{170, 0, 0, 255})
-		ebitenutil.DrawRect(screen, 100, 130, 25, 25, color.RGBA{140, 0, 0, 255})
-		ebitenutil.DrawRect(screen, 155, 100, 35, 25, color.RGBA{120, 0, 0, 255})
-		ebitenutil.DrawRect(screen, 165, 105, 15, 12, color.RGBA{100, 200, 255, 255})
-		ebitenutil.DrawRect(screen, 135, 95, 12, 25, color.RGBA{60, 60, 60, 255})
-
-		for i := 0; i < 3; i++ {
-			ebitenutil.DrawRect(screen, 115+30*float64(i), 155, 22, 22, color.Black)
-			ebitenutil.DrawRect(screen, 120+30*float64(i), 160, 12, 12, color.RGBA{100, 100, 100, 255})
-		}
-		// Wagon
-		ebitenutil.DrawRect(screen, 205, 120, 75, 35, color.RGBA{0, 80, 180, 255})
-		for i := 0; i < 2; i++ {
-			ebitenutil.DrawRect(screen, 215+35*float64(i), 155, 22, 22, color.Black)
-		}
 		ebitenutil.DebugPrintAt(screen, "You are still alive, Terry.", 95, 20)
 		ebitenutil.DebugPrintAt(screen, "Press R to restart", 105, 35)
 		return
 	}
 
-	// Raycasting
 	fov := math.Pi / 3
 	for i := 0; i < width; i++ {
 		rayAngle := g.player.angle - fov/2 + fov*float64(i)/float64(width)
@@ -269,6 +249,21 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		lineHeight := int(float64(height) / corrected)
 		col := getWallColor(cell, distance, g.level)
 		ebitenutil.DrawLine(screen, float64(i), float64(height/2-lineHeight/2), float64(i), float64(height/2+lineHeight/2), col)
+
+		// Cisimleri çiz (muz/kapı) sadece raycast önünde
+		if cell == 2 && g.level < 4 {
+			op := &ebiten.DrawImageOptions{}
+			scale := float64(lineHeight) / float64(g.bananaImage.Bounds().Dy())
+			op.GeoM.Scale(scale, scale)
+			op.GeoM.Translate(float64(i)-float64(g.bananaImage.Bounds().Dx())*scale/2, float64(height/2)-float64(lineHeight)/2)
+			screen.DrawImage(g.bananaImage, op)
+		} else if cell == 2 && g.level == 4 {
+			op := &ebiten.DrawImageOptions{}
+			scale := float64(lineHeight) / float64(g.doorImage.Bounds().Dy())
+			op.GeoM.Scale(scale, scale)
+			op.GeoM.Translate(float64(i)-float64(g.doorImage.Bounds().Dx())*scale/2, float64(height/2)-float64(lineHeight)/2)
+			screen.DrawImage(g.doorImage, op)
+		}
 	}
 
 	ebitenutil.DebugPrintAt(screen, fmt.Sprintf("Level: %d", g.level), 10, 10)
@@ -322,12 +317,49 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 }
 
 ///////////////////////////////////////////////////////////////
+// MÜZİK
+///////////////////////////////////////////////////////////////
+
+func loadMusic() {
+	var err error
+	audioContext = audio.NewContext(44100)
+	f, err := os.Open("textures/music.mp3")
+	if err != nil {
+		log.Fatal(err)
+	}
+	d, err := mp3.Decode(audioContext, f)
+	if err != nil {
+		log.Fatal(err)
+	}
+	musicPlayer, err = audio.NewPlayer(audioContext, d)
+	if err != nil {
+		log.Fatal(err)
+	}
+	musicPlayer.Play()
+}
+
+///////////////////////////////////////////////////////////////
 
 func main() {
-	generateMaze(1)
-	placeExit(1, 1)
+	banana, _, err := ebitenutil.NewImageFromFile("textures/banana.png")
+	if err != nil {
+		log.Fatal(err)
+	}
+	door, _, err := ebitenutil.NewImageFromFile("textures/door.png")
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	game := &Game{player: Player{1.5, 1.5, 0, 0.1}, level: 1}
+	loadMusic() // müzik başlat
+
+	game := &Game{
+		player:      Player{1.5, 1.5, 0, 0.1},
+		level:       1,
+		bananaImage: banana,
+		doorImage:   door,
+	}
+	game.generateLevel()
+
 	ebiten.SetWindowSize(640, 400)
 	ebiten.SetWindowTitle("Dream-Maze")
 	if err := ebiten.RunGame(game); err != nil {
