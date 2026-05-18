@@ -92,12 +92,4 @@ This project explores:
 - Distortion effects
 - Mobile port
 
----
 
-## License
-
-MIT License
-
----
-
-Created by [Your Name]
